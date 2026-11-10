@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.util.UnstableApi
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
@@ -193,6 +194,7 @@ class MainViewModel @Inject constructor(
     fun onToggleFavorite(id: String) { viewModelScope.launch { repository.toggleFavorite(id) } }
 }
 
+@OptIn(UnstableApi::class)
 @Singleton
 class IptvPlayerManager @Inject constructor(@ApplicationContext private val context: Context) {
     private var player: ExoPlayer? = null
