@@ -243,8 +243,10 @@ class PlayerViewModel @Inject constructor(val playerManager: IptvPlayerManager) 
     var currentChannel by mutableStateOf<Channel?>(null)
     var isBuffering by mutableStateOf(false)
     var isPlaying by mutableStateOf(false)
+    
+    @set:JvmName("setVolumeInternal")
     var volume by mutableStateOf(1f)
-
+    
     init {
         playerManager.getPlayer().addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) { isBuffering = state == Player.STATE_BUFFERING }
