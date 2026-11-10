@@ -1,353 +1,180 @@
 package com.example.iptvplayer
 
-import android.app.Application
-import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.annotation.OptIn
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.hls.HlsMediaSource
-import androidx.media3.ui.PlayerView
-import androidx.room.*
-import coil.compose.AsyncImage
-import dagger.Module
-import dagger.Provides
-import dagger.hilt.InstallIn
-import dagger.hilt.android.HiltAndroidApp
+import dagger.hilt.android.AndroidEntryPoint
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
-import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
+import kotlinx.coroutines.withContext
 import java.net.URL
-import java.util.UUID
 import javax.inject.Inject
-import javax.inject.Singleton
 
-@HiltAndroidApp
-class MyApp : Application()
+// --- Модель данных для канала ---
+data class Channel(val name: String, val url: String)
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFF6CDBAC), onPrimary = Color(0xFF003829),
-    background = Color(0xFF0F1115), onBackground = Color(0xFFE2E2E6),
-    surface = Color(0xFF1A1D24), onSurface = Color(0xFFE2E2E6)
-)
-
-data class Channel(
-    val id: String, val name: String, val tvgId: String?, val tvgName: String?,
-    val logoUrl: String?, val streamUrl: String, val categoryName: String,
-    val userAgent: String?, val isFavorite: Boolean
-)
-
-@Entity(tableName = "channels")
-data class ChannelEntity(
-    @PrimaryKey val id: String, val name: String, val tvgId: String?,
-    val tvgName: String?, val logoUrl: String?, val streamUrl: String,
-    val categoryName: String, val userAgent: String?, val isFavorite: Boolean = false
-) {
-    fun toDomain() = Channel(id, name, tvgId, tvgName, logoUrl, streamUrl, categoryName, userAgent, isFavorite)
-}
-
-fun Channel.toEntity() = ChannelEntity(id, name, tvgId, tvgName, logoUrl, streamUrl, categoryName, userAgent, isFavorite)
-
-@Dao
-interface ChannelDao {
-    @Query("SELECT * FROM channels ORDER BY name ASC")
-    fun getAllChannels(): Flow<List<ChannelEntity>>
-    @Query("SELECT * FROM channels WHERE categoryName = :categoryName ORDER BY name ASC")
-    fun getChannelsByCategory(categoryName: String): Flow<List<ChannelEntity>>
-    @Query("SELECT * FROM channels WHERE name LIKE '%' || :query || '%' ORDER BY name ASC")
-    fun searchChannels(query: String): Flow<List<ChannelEntity>>
-    @Query("UPDATE channels SET isFavorite = NOT isFavorite WHERE id = :channelId")
-    suspend fun toggleFavorite(channelId: String)
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertChannels(channels: List<ChannelEntity>)
-}
-
-@Database(entities = [ChannelEntity::class], version = 1, exportSchema = false)
-abstract class AppDatabase : RoomDatabase() {
-    abstract fun channelDao(): ChannelDao
-}
-
-class M3uParser {
-    fun parse(inputStream: java.io.InputStream, chunkSize: Int = 100): Flow<List<Channel>> = flow {
-        val reader = BufferedReader(InputStreamReader(inputStream))
-        var pendingExtinf: String? = null
-        val chunk = ArrayList<Channel>(chunkSize)
-        val attrRegex = Regex("""([\w-]+)="([^"]*)"""")
-        val nameRegex = Regex(""",([^,]+)$""")
-
-        reader.useLines { lines ->
-            for (line in lines) {
-                val trimmed = line.trim()
-                if (trimmed.startsWith("#EXTINF:")) {
-                    pendingExtinf = trimmed
-                } else if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && pendingExtinf != null) {
-                    val attrs = attrRegex.findAll(pendingExtinf!!).associate { it.groupValues[1] to it.groupValues[2] }
-                    val name = nameRegex.find(pendingExtinf!!)?.groupValues?.get(1)?.trim() ?: attrs["tvg-name"] ?: "Unknown"
-                    val category = attrs["group-title"]?.takeIf { it.isNotBlank() } ?: "Разное"
-                    chunk.add(Channel(UUID.nameUUIDFromBytes(trimmed.toByteArray()).toString(), name, attrs["tvg-id"], attrs["tvg-name"], attrs["tvg-logo"], trimmed, category, attrs["http-user-agent"], false))
-                    pendingExtinf = null
-                    if (chunk.size >= chunkSize) { emit(chunk.toList()); chunk.clear() }
-                }
-            }
-        }
-        if (chunk.isNotEmpty()) emit(chunk.toList())
-    }.flowOn(Dispatchers.IO)
-}
-
-interface ChannelRepository {
-    fun getAllChannels(): Flow<List<Channel>>
-    fun getChannelsByCategory(categoryName: String): Flow<List<Channel>>
-    fun searchChannels(query: String): Flow<List<Channel>>
-    suspend fun toggleFavorite(channelId: String)
-    suspend fun saveChannels(channels: List<Channel>)
-}
-
-class ChannelRepositoryImpl @Inject constructor(private val dao: ChannelDao) : ChannelRepository {
-    override fun getAllChannels() = dao.getAllChannels().map { list -> list.map { it.toDomain() } }
-    override fun getChannelsByCategory(categoryName: String) = dao.getChannelsByCategory(categoryName).map { list -> list.map { it.toDomain() } }
-    override fun searchChannels(query: String) = dao.searchChannels(query).map { list -> list.map { it.toDomain() } }
-    override suspend fun toggleFavorite(channelId: String) = dao.toggleFavorite(channelId)
-    override suspend fun saveChannels(channels: List<Channel>) = dao.insertChannels(channels.map { it.toEntity() })
-}
-
-class GetChannelsUseCase @Inject constructor(private val repository: ChannelRepository) {
-    operator fun invoke(category: String? = null, query: String? = null): Flow<List<Channel>> {
-        return when {
-            !query.isNullOrBlank() -> repository.searchChannels(query)
-            !category.isNullOrBlank() -> repository.getChannelsByCategory(category)
-            else -> repository.getAllChannels()
-        }
-    }
-}
-
-@Module
-@InstallIn(SingletonComponent::class)
-object AppModule {
-    @Provides @Singleton
-    fun provideDatabase(@ApplicationContext context: Context) = Room.databaseBuilder(context, AppDatabase::class.java, "iptv_db").fallbackToDestructiveMigration().build()
-    
-    @Provides @Singleton
-    fun provideChannelDao(db: AppDatabase) = db.channelDao()
-
-    @Provides @Singleton
-    fun provideChannelRepository(dao: ChannelDao): ChannelRepository = ChannelRepositoryImpl(dao)
-}
-
-data class MainUiState(
-    val channels: List<Channel> = emptyList(),
-    val categories: List<String> = emptyList(),
-    val selectedCategory: String? = null,
-    val searchQuery: String = ""
-)
-
-@OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+// --- ViewModel ---
 @HiltViewModel
-class MainViewModel @Inject constructor(
-    private val getChannelsUseCase: GetChannelsUseCase,
-    private val repository: ChannelRepository
-) : ViewModel() {
-    private val selectedCategory = MutableStateFlow<String?>(null)
-    private val searchQuery = MutableStateFlow("")
+class PlayerViewModel @Inject constructor(val playerManager: IptvPlayerManager) : androidx.lifecycle.ViewModel() {
+    
+    var channels by mutableStateOf<List<Channel>>(emptyList())
+        private set
 
-    init {
-        viewModelScope.launch(Dispatchers.IO) {
+    var isLoading by mutableStateOf(false)
+        private set
+
+    var errorMessage by mutableStateOf<String?>(null)
+        private set
+
+    // Функция загрузки и парсинга плейлиста
+    fun loadPlaylist(url: String) {
+        if (url.isBlank()) return
+        isLoading = true
+        errorMessage = null
+
+        // Используем viewModelScope для фоновой загрузки
+        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
             try {
-                val url = URL("https://iptv-org.github.io/iptv/index.m3u")
-                val connection = url.openConnection() as HttpURLConnection
-                connection.connectTimeout = 10000
-                connection.readTimeout = 10000
-                connection.inputStream.use { inputStream ->
-                    M3uParser().parse(inputStream).collect { chunk ->
-                        repository.saveChannels(chunk)
+                val parsedChannels = mutableListOf<Channel>()
+                val connection = URL(url).openConnection()
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
+                val stream = connection.getInputStream()
+                val reader = stream.bufferedReader()
+                
+                var currentName = ""
+
+                // Читаем файл строка за строкой
+                reader.forEachLine { line ->
+                    if (line.startsWith("#EXTINF:")) {
+                        // Вытаскиваем имя канала (после последней запятой)
+                        val nameMatch = Regex(",(.*)$").find(line)
+                        currentName = nameMatch?.groupValues?.get(1)?.trim() ?: "Без названия"
+                    } else if (line.startsWith("http")) {
+                        // Если строка начинается с http, это ссылка на поток
+                        parsedChannels.add(Channel(currentName, line.trim()))
                     }
+                }
+                
+                withContext(Dispatchers.Main) {
+                    channels = parsedChannels
+                    isLoading = false
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
-    val uiState: StateFlow<MainUiState> = combine(
-        selectedCategory,
-        searchQuery.debounce(300)
-    ) { category, query -> category to query }
-        .flatMapLatest { (category, query) -> getChannelsUseCase(category, query) }
-        .map { channels ->
-            MainUiState(channels, channels.map { it.categoryName }.distinct().sorted(), selectedCategory.value, searchQuery.value)
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), MainUiState())
-
-    fun onCategorySelected(category: String?) { selectedCategory.value = category }
-    fun onSearchQueryChanged(query: String) { searchQuery.value = query }
-    fun onToggleFavorite(id: String) { viewModelScope.launch { repository.toggleFavorite(id) } }
-}
-
-@OptIn(UnstableApi::class)
-@Singleton
-class IptvPlayerManager @Inject constructor(@ApplicationContext private val context: Context) {
-    private var player: ExoPlayer? = null
-    fun getPlayer() = player ?: ExoPlayer.Builder(context).build().also { player = it }
-
-    fun playChannel(channel: Channel) {
-        val p = getPlayer()
-        val httpFactory = DefaultHttpDataSource.Factory().apply { channel.userAgent?.let { setUserAgent(it) } }
-        val mediaSource = HlsMediaSource.Factory(httpFactory).createMediaSource(
-            MediaItem.Builder().setUri(channel.streamUrl).setMimeType(MimeTypes.APPLICATION_M3U8).build()
-        )
-        p.setMediaSource(mediaSource)
-        p.prepare()
-        p.playWhenReady = true
-    }
-    fun togglePlayPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
-    fun setVolume(v: Float) { player?.volume = v }
-    fun release() { player?.release(); player = null }
-}
-
-@HiltViewModel
-class PlayerViewModel @Inject constructor(val playerManager: IptvPlayerManager) : ViewModel() {
-    var currentChannel by mutableStateOf<Channel?>(null)
-    var isBuffering by mutableStateOf(false)
-    var isPlaying by mutableStateOf(false)
-    
-    @set:JvmName("setVolumeInternal")
-    var volume by mutableStateOf(1f)
-    
-    init {
-        playerManager.getPlayer().addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) { isBuffering = state == Player.STATE_BUFFERING }
-            override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
-        })
-    }
-
-    fun play(channel: Channel) {
-        currentChannel = channel
-        playerManager.playChannel(channel)
-    }
-    fun togglePlayPause() = playerManager.togglePlayPause()
-    fun setVolume(v: Float) { volume = v; playerManager.setVolume(v) }
-    override fun onCleared() { super.onCleared(); playerManager.release() }
-}
-
-@Composable
-fun MainScreen(viewModel: MainViewModel, onChannelClick: (Channel) -> Unit) {
-    val state by viewModel.uiState.collectAsState()
-    var searchText by remember { mutableStateOf("") }
-    
-    LaunchedEffect(searchText) { viewModel.onSearchQueryChanged(searchText) }
-
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        OutlinedTextField(
-            value = searchText, onValueChange = { searchText = it },
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            placeholder = { Text("Поиск...") }, leadingIcon = { Icon(Icons.Default.Search, null) }
-        )
-        if (state.channels.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator()
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Загрузка плейлиста... Пожалуйста, подождите")
-                }
-            }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(160.dp),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(state.channels, key = { it.id }) { channel ->
-                    Card(modifier = Modifier.clickable { onChannelClick(channel) }) {
-                        Column(modifier = Modifier.padding(8.dp)) {
-                            AsyncImage(model = channel.logoUrl, contentDescription = null, modifier = Modifier.fillMaxWidth().height(80.dp), contentScale = ContentScale.Fit)
-                            Text(channel.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
+                withContext(Dispatchers.Main) {
+                    errorMessage = "Ошибка: ${e.message}"
+                    isLoading = false
                 }
             }
         }
     }
 }
 
-@OptIn(UnstableApi::class) 
-@Composable
-fun PlayerScreen(viewModel: PlayerViewModel, playerManager: IptvPlayerManager, onBack: () -> Unit) {
-    val channel = viewModel.currentChannel
-    LaunchedEffect(channel) { channel?.let { viewModel.play(it) } }
-
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        AndroidView(
-            factory = { ctx -> PlayerView(ctx).apply { player = playerManager.getPlayer(); useController = false } },
-            modifier = Modifier.fillMaxSize()
-        )
-        if (viewModel.isBuffering) CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-
-        Row(modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(0.5f)).padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            IconButton(onClick = { viewModel.togglePlayPause() }) {
-                Icon(if (viewModel.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = Color.White)
-            }
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) }
-        }
-    }
-}
-
-@dagger.hilt.android.AndroidEntryPoint
+// --- Главный экран ---
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    @Inject lateinit var playerManager: IptvPlayerManager
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = DarkColorScheme) {
-                var showPlayer by remember { mutableStateOf(false) }
-                
-                val mainVm: MainViewModel = hiltViewModel()
-                val playerVm: PlayerViewModel = hiltViewModel()
+            MaterialTheme {
+                val viewModel: PlayerViewModel = hiltViewModel()
+                MainScreen(viewModel)
+            }
+        }
+    }
+}
 
-                if (!showPlayer) {
-                    MainScreen(mainVm) { channel ->
-                        playerVm.currentChannel = channel
-                        showPlayer = true
-                    }
-                } else {
-                    PlayerScreen(playerVm, playerManager) { showPlayer = false }
+@Composable
+fun MainScreen(viewModel: PlayerViewModel) {
+    var inputUrl by remember { mutableStateOf("") }
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        
+        // Поле ввода ссылки
+        OutlinedTextField(
+            value = inputUrl,
+            onValueChange = { inputUrl = it },
+            label = { Text("Ссылка на M3U плейлист") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Кнопка загрузки
+        Button(
+            onClick = { viewModel.loadPlaylist(inputUrl) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !viewModel.isLoading
+        ) {
+            if (viewModel.isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White)
+            } else {
+                Text("Загрузить каналы")
+            }
+        }
+
+        if (viewModel.errorMessage != null) {
+            Text(
+                text = viewModel.errorMessage!!,
+                color = Color.Red,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Сетка каналов
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            contentPadding = PaddingValues(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            items(viewModel.channels) { channel ->
+                ChannelCard(channel) {
+                    // ВОТ ЗДЕСЬ МЫ ЗАПУСКАЕМ ВИДЕО
+                    // Если у вас в PlayerManager метод называется иначе, поменяйте эту строку
+                    viewModel.playerManager.playChannel(channel.url) 
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun ChannelCard(channel: Channel, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1.2f)
+            .clickable { onClick() },
+        colors = CardDefaults.cardColors(containerColor = Color.DarkGray)
+    ) {
+        Box(modifier = Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+            Text(
+                text = channel.name, 
+                color = Color.White, 
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2
+            )
         }
     }
 }
