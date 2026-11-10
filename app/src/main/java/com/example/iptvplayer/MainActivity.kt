@@ -23,9 +23,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
@@ -226,6 +226,128 @@ class IptvPlayerManager @Inject constructor(@ApplicationContext private val cont
         val p = getPlayer()
         val httpFactory = DefaultHttpDataSource.Factory().apply { channel.userAgent?.let { setUserAgent(it) } }
         val mediaSource = HlsMediaSource.Factory(httpFactory).createMediaSource(
+            MediaItem.Builder().setUri(channel.streamUrl).setMimeType(MimeTypes.APPLICATION_M3U8).build()
+        )
+        p.setMediaSource(mediaSource)
+        p.prepare()
+        p.playWhenReady = true
+    }
+    fun togglePlayPause() { player?.let { if (it.isPlaying) it.pause() else it.play() } }
+    fun setVolume(v: Float) { player?.volume = v }
+    fun release() { player?.release(); player = null }
+}
+
+@HiltViewModel
+class PlayerViewModel @Inject constructor(val playerManager: IptvPlayerManager) : ViewModel() {
+    var currentChannel by mutableStateOf<Channel?>(null)
+    var isBuffering by mutableStateOf(false)
+    var isPlaying by mutableStateOf(false)
+    var volume by mutableStateOf(1f)
+
+    init {
+        playerManager.getPlayer().addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) { isBuffering = state == Player.STATE_BUFFERING }
+            override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+        })
+    }
+
+    fun play(channel: Channel) {
+        currentChannel = channel
+        playerManager.playChannel(channel)
+    }
+    fun togglePlayPause() = playerManager.togglePlayPause()
+    fun setVolume(v: Float) { volume = v; playerManager.setVolume(v) }
+    override fun onCleared() { super.onCleared(); playerManager.release() }
+}
+
+@Composable
+fun MainScreen(viewModel: MainViewModel, onChannelClick: (Channel) -> Unit) {
+    val state by viewModel.uiState.collectAsState()
+    var searchText by remember { mutableStateOf("") }
+    
+    LaunchedEffect(searchText) { viewModel.onSearchQueryChanged(searchText) }
+
+    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        OutlinedTextField(
+            value = searchText, onValueChange = { searchText = it },
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            placeholder = { Text("Поиск...") }, leadingIcon = { Icon(Icons.Default.Search, null) }
+        )
+        if (state.channels.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Загрузка плейлиста... Пожалуйста, подождите")
+                }
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(160.dp),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(state.channels, key = { it.id }) { channel ->
+                    Card(modifier = Modifier.clickable { onChannelClick(channel) }) {
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            AsyncImage(model = channel.logoUrl, contentDescription = null, modifier = Modifier.fillMaxWidth().height(80.dp), contentScale = ContentScale.Fit)
+                            Text(channel.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PlayerScreen(viewModel: PlayerViewModel, playerManager: IptvPlayerManager, onBack: () -> Unit) {
+    val channel = viewModel.currentChannel
+    LaunchedEffect(channel) { channel?.let { viewModel.play(it) } }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        AndroidView(
+            factory = { ctx -> PlayerView(ctx).apply { player = playerManager.getPlayer(); useController = false } },
+            modifier = Modifier.fillMaxSize()
+        )
+        if (viewModel.isBuffering) CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+
+        Row(modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(0.5f)).padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            IconButton(onClick = { viewModel.togglePlayPause() }) {
+                Icon(if (viewModel.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = Color.White)
+            }
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = Color.White) }
+        }
+    }
+}
+
+@dagger.hilt.android.AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+    @Inject lateinit var playerManager: IptvPlayerManager
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme(colorScheme = DarkColorScheme) {
+                var showPlayer by remember { mutableStateOf(false) }
+                
+                // Теперь используем viewModel(), а не hiltViewModel()
+                val mainVm: MainViewModel = viewModel()
+                val playerVm: PlayerViewModel = viewModel()
+
+                if (!showPlayer) {
+                    MainScreen(mainVm) { channel ->
+                        playerVm.currentChannel = channel
+                        showPlayer = true
+                    }
+                } else {
+                    PlayerScreen(playerVm, playerManager) { showPlayer = false }
+                }
+            }
+        }
+    }
+}rce = HlsMediaSource.Factory(httpFactory).createMediaSource(
             MediaItem.Builder().setUri(channel.streamUrl).setMimeType(MimeTypes.APPLICATION_M3U8).build()
         )
         p.setMediaSource(mediaSource)
