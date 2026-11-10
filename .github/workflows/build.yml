@@ -27,7 +27,17 @@ jobs:
           gradle-version: '8.9'
 
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          set +e
+          gradle assembleDebug --stacktrace > build_log.txt 2>&1
+          BUILD_EXIT_CODE=$?
+          if [ $BUILD_EXIT_CODE -ne 0 ]; then
+            echo "=========================================="
+            echo "ОШИБКА КОМПИЛЯЦИИ (СКОПИРУЙТЕ ЭТО):"
+            echo "=========================================="
+            grep -E "^e: " build_log.txt || tail -n 100 build_log.txt
+            exit $BUILD_EXIT_CODE
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
